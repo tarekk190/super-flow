@@ -1,10 +1,14 @@
 "use client";
 
-import { useState, useTransition, useCallback, useRef } from "react";
+import { useState, useTransition, useCallback, useRef, useEffect, useMemo } from "react";
 import { embedJournalEntry, searchJournal } from "@/app/actions/ai-actions";
 import ErrorBoundary from "@/components/ui/ErrorBoundary";
+import { createClient } from "@/lib/supabase/client";
+import { useUser } from "@/hooks/useUser";
 
-// ─── Toast Notification ──────────────────────────────────────────────────────
+const MOOD_OPTIONS = ["😄", "😊", "😐", "😔", "😢", "😡", "🤩", "😴"];
+
+// ─── Toast Notification ───────────────────────────────────────────────────────
 function Toast({ toast, onDismiss }) {
   if (!toast) return null;
   const isError = toast.type === "error";
@@ -39,7 +43,7 @@ function Toast({ toast, onDismiss }) {
   );
 }
 
-// ─── Similarity Score Badge ──────────────────────────────────────────────────
+// ─── Similarity Score Badge ───────────────────────────────────────────────────
 function ScoreBadge({ score }) {
   const pct = Math.round(score * 100);
   const color =
@@ -57,7 +61,7 @@ function ScoreBadge({ score }) {
   );
 }
 
-// ─── Search Result Card ──────────────────────────────────────────────────────
+// ─── Search Result Card ───────────────────────────────────────────────────────
 function MemoryCard({ match }) {
   const date = match.created_at
     ? new Date(match.created_at).toLocaleDateString("en-US", {
@@ -67,7 +71,6 @@ function MemoryCard({ match }) {
       })
     : null;
 
-  // Truncate content to a readable snippet
   const snippet =
     match.content.length > 280
       ? match.content.slice(0, 280).trimEnd() + "…"
@@ -96,7 +99,7 @@ function MemoryCard({ match }) {
   );
 }
 
-// ─── Search Loading Skeleton ─────────────────────────────────────────────────
+// ─── Search Loading Skeleton ──────────────────────────────────────────────────
 function SearchSkeleton() {
   return (
     <div className="space-y-3 animate-pulse mt-4" aria-busy="true" aria-label="Searching memories…">
@@ -117,7 +120,93 @@ function SearchSkeleton() {
   );
 }
 
-// ─── Main Component ──────────────────────────────────────────────────────────
+// ─── Mood Picker ──────────────────────────────────────────────────────────────
+function MoodPicker({ selected, onChange }) {
+  return (
+    <div className="flex items-center gap-3 px-6 py-3 border-b border-outline-variant/10 bg-surface-container/20">
+      <span className="text-xs font-semibold text-on-surface-variant whitespace-nowrap">
+        Today's mood
+      </span>
+      <div className="flex gap-1 flex-wrap">
+        {MOOD_OPTIONS.map((emoji) => (
+          <button
+            key={emoji}
+            type="button"
+            onClick={() => onChange(emoji)}
+            className={`w-8 h-8 rounded-lg text-base flex items-center justify-center transition-all duration-150 ${
+              selected === emoji
+                ? "bg-secondary/15 scale-110 ring-2 ring-secondary/40"
+                : "hover:bg-surface-container hover:scale-105 opacity-60 hover:opacity-100"
+            }`}
+            aria-label={`Mood ${emoji}`}
+            aria-pressed={selected === emoji}
+          >
+            {emoji}
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+// ─── Entry Card ───────────────────────────────────────────────────────────────
+function EntryCard({ entry }) {
+  const d = new Date(entry.created_at);
+  const datePart = d.toLocaleDateString("en-US", {
+    weekday: "long",
+    month: "long",
+    day: "numeric",
+  });
+  const timePart = d.toLocaleTimeString("en-US", {
+    hour: "numeric",
+    minute: "2-digit",
+    hour12: true,
+  });
+
+  return (
+    <article className="bg-surface-container-lowest rounded-2xl p-5 border border-outline-variant/20 hover:border-secondary/30 hover:shadow-md transition-all duration-200">
+      <div className="flex items-center justify-between gap-3 mb-3">
+        <div className="flex items-center gap-2.5">
+          <span className="text-xl leading-none">{entry.mood ?? "😊"}</span>
+          <time
+            className="text-xs text-on-surface-variant font-medium"
+            dateTime={entry.created_at}
+          >
+            {datePart} · {timePart}
+          </time>
+        </div>
+      </div>
+      <p className="text-sm text-on-surface leading-relaxed font-serif whitespace-pre-wrap">
+        {entry.text}
+      </p>
+    </article>
+  );
+}
+
+// ─── Entries Loading Skeleton ─────────────────────────────────────────────────
+function EntriesSkeleton() {
+  return (
+    <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4 animate-pulse">
+      {[0, 1, 2].map((i) => (
+        <div
+          key={i}
+          className="bg-surface-container-lowest rounded-2xl p-5 border border-outline-variant/20 space-y-3"
+        >
+          <div className="flex items-center gap-2">
+            <div className="w-7 h-7 rounded-lg bg-surface-container-high" />
+            <div className="h-3 w-40 bg-surface-container-high rounded" />
+          </div>
+          <div className="space-y-2">
+            <div className="h-3 w-full bg-surface-container rounded" />
+            <div className="h-3 w-4/5 bg-surface-container rounded" />
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+// ─── Main Component ───────────────────────────────────────────────────────────
 export default function AIAssistant() {
   return (
     <ErrorBoundary>
@@ -127,47 +216,117 @@ export default function AIAssistant() {
 }
 
 function AIAssistantInner() {
-  // Write pane state
+  const { user } = useUser();
+
+  // ── Write pane state ────────────────────────────────────────────
   const [journalContent, setJournalContent] = useState("");
-  const [isSaving, startSaveTransition] = useTransition();
-  const textareaRef = useRef(null);
+  const [selectedMood, setSelectedMood]     = useState("😊");
+  const [isSaving, startSaveTransition]     = useTransition();
+  const textareaRef                         = useRef(null);
 
-  // Recall pane state
-  const [searchQuery, setSearchQuery] = useState("");
-  const [searchResults, setSearchResults] = useState(null);
+  // ── Recall pane state ───────────────────────────────────────────
+  const [searchQuery, setSearchQuery]       = useState("");
+  const [searchResults, setSearchResults]   = useState(null);
   const [isSearching, startSearchTransition] = useTransition();
-  const [hasSearched, setHasSearched] = useState(false);
+  const [hasSearched, setHasSearched]       = useState(false);
 
-  // Toast state
+  // ── Toast state ─────────────────────────────────────────────────
   const [toast, setToast] = useState(null);
+
+  // ── Journal entries state ────────────────────────────────────────
+  const [entries, setEntries]               = useState([]);
+  const [entriesLoading, setEntriesLoading] = useState(true);
+  const [entriesError, setEntriesError]     = useState(null);
+  const [sortOrder, setSortOrder]           = useState("newest");
 
   const showToast = useCallback((type, title, message = "") => {
     setToast({ type, title, message });
     setTimeout(() => setToast(null), 5000);
   }, []);
 
-  // ── Save & Embed handler ────────────────────────────────────────
+  // ── Fetch entries from Supabase on mount ────────────────────────
+  useEffect(() => {
+    if (!user) {
+      setEntriesLoading(false);
+      return;
+    }
+    const supabase = createClient();
+    supabase
+      .from("journal_entries")
+      .select("id, text, mood, created_at")
+      .eq("user_id", user.id)
+      .then(({ data, error: fetchError }) => {
+        if (fetchError) {
+          console.error("Journal fetch error:", fetchError);
+          setEntriesError("Failed to load entries.");
+        } else {
+          setEntries(data ?? []);
+        }
+        setEntriesLoading(false);
+      });
+  }, [user]);
+
+  // ── Sorted entries (client-side) ────────────────────────────────
+  const sortedEntries = useMemo(() => {
+    return [...entries].sort((a, b) => {
+      const ta = new Date(a.created_at).getTime();
+      const tb = new Date(b.created_at).getTime();
+      return sortOrder === "newest" ? tb - ta : ta - tb;
+    });
+  }, [entries, sortOrder]);
+
+  // ── Save handler — saves to Supabase, then tries AI embed ───────
   const handleSave = useCallback(() => {
     const trimmed = journalContent.trim();
     if (!trimmed) return;
 
     startSaveTransition(async () => {
       try {
-        const result = await embedJournalEntry(trimmed);
-        if (!result.success) {
-          showToast("error", "Save Failed", result.error || "Could not embed this entry.");
-          return;
+        // 1. Save to Supabase (primary persistence)
+        let savedEntry = null;
+        if (user) {
+          const supabase = createClient();
+          const { data, error: dbError } = await supabase
+            .from("journal_entries")
+            .insert({
+              user_id: user.id,
+              text:    trimmed,
+              mood:    selectedMood,
+            })
+            .select("id, text, mood, created_at")
+            .single();
+
+          if (dbError) {
+            console.error("Journal insert error:", dbError);
+            showToast("error", "Save Failed", "Could not save your entry to the database.");
+            return;
+          }
+          savedEntry = data;
+          setEntries((prev) => [savedEntry, ...prev]);
         }
-        showToast("success", "Entry Saved!", "Your reflection has been embedded into your memory.");
+
+        // 2. Try AI embed (best-effort — failure doesn't block the user)
+        try {
+          const result = await embedJournalEntry(trimmed);
+          if (result.success) {
+            showToast("success", "Entry Saved!", "Saved and embedded into your personal memory.");
+          } else {
+            showToast("success", "Entry Saved!", "Your reflection has been recorded.");
+          }
+        } catch {
+          showToast("success", "Entry Saved!", "Your reflection has been recorded.");
+        }
+
         setJournalContent("");
+        setSelectedMood("😊");
         if (textareaRef.current) textareaRef.current.focus();
       } catch (err) {
-        showToast("error", "Connection Error", "Could not reach the AI service.");
+        showToast("error", "Save Failed", "An unexpected error occurred.");
       }
     });
-  }, [journalContent, showToast]);
+  }, [journalContent, selectedMood, user, showToast]);
 
-  // ── Search handler ──────────────────────────────────────────────
+  // ── Search handler ───────────────────────────────────────────────
   const handleSearch = useCallback(
     (e) => {
       e.preventDefault();
@@ -187,7 +346,7 @@ function AIAssistantInner() {
           }
           setSearchResults(result.data);
           setHasSearched(true);
-        } catch (err) {
+        } catch {
           showToast("error", "Connection Error", "Could not reach the AI service.");
           setHasSearched(true);
         }
@@ -196,14 +355,15 @@ function AIAssistantInner() {
     [searchQuery, showToast]
   );
 
-  const wordCount = journalContent.trim().split(/\s+/).filter(Boolean).length;
+  const wordCount  = journalContent.trim().split(/\s+/).filter(Boolean).length;
   const hasMatches = searchResults?.matches?.length > 0;
 
   return (
     <>
       <Toast toast={toast} onDismiss={() => setToast(null)} />
 
-      <div className="max-w-7xl mx-auto px-6 py-10 h-full">
+      <div className="max-w-7xl mx-auto px-6 py-10">
+
         {/* Page header */}
         <div className="mb-8">
           <span className="text-[10px] font-bold uppercase tracking-widest text-secondary block mb-2">
@@ -215,10 +375,10 @@ function AIAssistantInner() {
           </p>
         </div>
 
-        {/* Split pane layout */}
+        {/* ── Split pane layout ── */}
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 items-start">
 
-          {/* ── LEFT PANE: Write ── */}
+          {/* LEFT PANE: Write */}
           <section
             aria-label="Write journal entry"
             className="bg-surface-container-lowest rounded-3xl shadow-sm border border-outline-variant/20 overflow-hidden flex flex-col"
@@ -239,18 +399,19 @@ function AIAssistantInner() {
               </div>
             </div>
 
+            {/* Mood picker */}
+            <MoodPicker selected={selectedMood} onChange={setSelectedMood} />
+
             {/* Textarea */}
             <div className="p-6 flex-1">
               <textarea
                 ref={textareaRef}
                 value={journalContent}
                 onChange={(e) => setJournalContent(e.target.value)}
-                placeholder="How are you feeling today? What challenged you? What are you grateful for?
-
-Write without judgment — your thoughts will be embedded into your personal memory and can be recalled later through semantic search."
+                placeholder={`How are you feeling today? What challenged you? What are you grateful for?\n\nWrite without judgment — your thoughts will be embedded into your personal memory and can be recalled later through semantic search.`}
                 disabled={isSaving}
                 aria-label="Journal entry text"
-                className="w-full h-72 lg:h-80 bg-transparent border-none resize-none focus:outline-none text-on-surface placeholder-on-surface/25 font-serif text-sm leading-relaxed disabled:opacity-50"
+                className="w-full h-64 lg:h-72 bg-transparent border-none resize-none focus:outline-none text-on-surface placeholder-on-surface/25 font-serif text-sm leading-relaxed disabled:opacity-50"
               />
             </div>
 
@@ -282,7 +443,7 @@ Write without judgment — your thoughts will be embedded into your personal mem
                       <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
                       <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8H4z" />
                     </svg>
-                    Embedding…
+                    Saving…
                   </>
                 ) : (
                   <>
@@ -296,7 +457,7 @@ Write without judgment — your thoughts will be embedded into your personal mem
             </div>
           </section>
 
-          {/* ── RIGHT PANE: Recall ── */}
+          {/* RIGHT PANE: Recall */}
           <section
             aria-label="Search past journal entries"
             className="bg-surface-container-lowest rounded-3xl shadow-sm border border-outline-variant/20 overflow-hidden flex flex-col"
@@ -365,10 +526,8 @@ Write without judgment — your thoughts will be embedded into your personal mem
 
             {/* Results area */}
             <div className="flex-1 px-6 pb-6 overflow-y-auto" style={{ maxHeight: "420px" }}>
-              {/* Loading */}
               {isSearching && <SearchSkeleton />}
 
-              {/* Results */}
               {!isSearching && hasMatches && (
                 <div className="space-y-3">
                   <p className="text-xs font-semibold text-on-surface-variant uppercase tracking-wider mb-4">
@@ -380,7 +539,6 @@ Write without judgment — your thoughts will be embedded into your personal mem
                 </div>
               )}
 
-              {/* Empty results */}
               {!isSearching && hasSearched && !hasMatches && (
                 <div className="py-12 text-center">
                   <span
@@ -396,7 +554,6 @@ Write without judgment — your thoughts will be embedded into your personal mem
                 </div>
               )}
 
-              {/* Idle state */}
               {!isSearching && !hasSearched && (
                 <div className="py-12 text-center">
                   <span
@@ -413,6 +570,97 @@ Write without judgment — your thoughts will be embedded into your personal mem
             </div>
           </section>
         </div>
+
+        {/* ── Journal Entries Section ── */}
+        <section className="mt-10" aria-label="Past journal entries">
+
+          {/* Section header + sort controls */}
+          <div className="flex items-center justify-between mb-5 gap-4">
+            <div>
+              <h2 className="text-lg font-bold text-on-surface">Past Reflections</h2>
+              {!entriesLoading && entries.length > 0 && (
+                <p className="text-xs text-on-surface-variant mt-0.5">
+                  {entries.length} {entries.length === 1 ? "entry" : "entries"}
+                </p>
+              )}
+            </div>
+
+            {/* Sort toggle */}
+            {!entriesLoading && entries.length > 1 && (
+              <div
+                className="flex items-center gap-1 bg-surface-container-low rounded-xl p-1 border border-outline-variant/20"
+                role="group"
+                aria-label="Sort entries"
+              >
+                <button
+                  onClick={() => setSortOrder("newest")}
+                  className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold transition-all ${
+                    sortOrder === "newest"
+                      ? "bg-surface-container-lowest text-on-surface shadow-sm"
+                      : "text-on-surface-variant hover:text-on-surface"
+                  }`}
+                >
+                  <span className="material-symbols-outlined" style={{ fontSize: "14px" }}>
+                    arrow_downward
+                  </span>
+                  Newest
+                </button>
+                <button
+                  onClick={() => setSortOrder("oldest")}
+                  className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold transition-all ${
+                    sortOrder === "oldest"
+                      ? "bg-surface-container-lowest text-on-surface shadow-sm"
+                      : "text-on-surface-variant hover:text-on-surface"
+                  }`}
+                >
+                  <span className="material-symbols-outlined" style={{ fontSize: "14px" }}>
+                    arrow_upward
+                  </span>
+                  Oldest
+                </button>
+              </div>
+            )}
+          </div>
+
+          {/* Error state */}
+          {entriesError && (
+            <div className="flex items-center gap-3 bg-red-50 border border-red-200 text-red-700 px-4 py-3 rounded-xl text-sm font-medium mb-4">
+              <span className="material-symbols-outlined text-red-500" style={{ fontSize: "18px" }}>
+                error
+              </span>
+              {entriesError}
+            </div>
+          )}
+
+          {/* Loading skeleton */}
+          {entriesLoading && <EntriesSkeleton />}
+
+          {/* Empty state */}
+          {!entriesLoading && entries.length === 0 && !entriesError && (
+            <div className="flex flex-col items-center justify-center py-16 text-center bg-surface-container-lowest rounded-3xl border border-outline-variant/20">
+              <span
+                className="material-symbols-outlined text-on-surface-variant/20 mb-4"
+                style={{ fontSize: "56px", fontVariationSettings: "'FILL' 1" }}
+              >
+                auto_stories
+              </span>
+              <p className="text-on-surface-variant font-semibold">No entries yet</p>
+              <p className="text-sm text-on-surface-variant/60 mt-1">
+                Write your first reflection above and hit Save.
+              </p>
+            </div>
+          )}
+
+          {/* Entry cards grid */}
+          {!entriesLoading && sortedEntries.length > 0 && (
+            <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
+              {sortedEntries.map((entry) => (
+                <EntryCard key={entry.id} entry={entry} />
+              ))}
+            </div>
+          )}
+        </section>
+
       </div>
     </>
   );
