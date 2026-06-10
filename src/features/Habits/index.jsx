@@ -10,7 +10,6 @@ const DAY_ABBR = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
 const FREQUENCY_CONFIG = {
   daily:  { color: "#4f46e5", icon: "repeat" },
   weekly: { color: "#059669", icon: "calendar_month" },
-  custom: { color: "#d97706", icon: "tune" },
 };
 
 function getLast7Days() {

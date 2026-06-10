@@ -113,6 +113,28 @@ export async function updateTaskQuadrant(taskId, newQuadrantId) {
 }
 
 /**
+ * Bulk-create tasks from Brain Dump (all land in unsorted).
+ */
+export async function createTasks(titles) {
+  const { supabase, user } = await requireUser();
+  const rows = titles.map(title => ({
+    user_id: user.id,
+    title: title.trim(),
+    quadrant_id: 'unsorted',
+  }));
+  const { data: tasks, error } = await supabase
+    .from('tasks')
+    .insert(rows)
+    .select();
+  if (error) {
+    console.error('[Tasks] Bulk create failed:', error.message);
+    throw new Error('Failed to create tasks.');
+  }
+  revalidatePath('/matrix');
+  return tasks.map(t => ({ ...t, desc: t.description }));
+}
+
+/**
  * Delete a task.
  */
 export async function deleteTask(taskId) {

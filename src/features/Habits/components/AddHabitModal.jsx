@@ -3,9 +3,8 @@
 import { useState } from "react";
 
 const FREQUENCY_OPTS = [
-  { value: "daily",  label: "Daily",  icon: "repeat",          color: "#4f46e5" },
-  { value: "weekly", label: "Weekly", icon: "calendar_month",  color: "#059669" },
-  { value: "custom", label: "Custom", icon: "tune",            color: "#d97706" },
+  { value: "daily",  label: "Daily",  icon: "repeat",         color: "#4f46e5" },
+  { value: "weekly", label: "Weekly", icon: "calendar_month", color: "#059669" },
 ];
 
 export default function AddHabitModal({ onClose, onAdd, loading }) {
